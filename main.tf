@@ -1,3 +1,47 @@
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-DECLARATIONS/DEFINITIONS---------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+
+# stating the provider and region
+provider "aws" {
+  region = local.region
+}
+
+# creating the default_tags variable for merging with resource specific tags
+variable "default_tags" {
+    # helpful suggestion from Kieron Garvey re merging lists
+    default = {
+        StudentName = "Patrick O Connor"
+        StudentNumber = "20040412"
+        Assignment = "DevOps Assignment 2"
+        Terraform = "true"
+        Environment = "dev"
+    }
+    type = map(string)
+}
+
+# creating the locals block for the region, image_id, pem file and user_data script
+# script retrieves the instance id, instance type and availability zone and adds it to the about page of the web server
+# monitoring script modified from labs and is now created in the user_data script in addition to the cron job
+locals {
+    region = "us-east-1"
+    image_id = "your_ami_id"
+    pem = "you_key_pair.pem"
+    user_data = <<-EOF
+            #!/bin/bash
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+            INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
+            AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            sed -i "19i <br>\n<br>\nThis version of placemark is running on the following amazon linux ec2-instance: $INSTANCE_ID in the following availability zone: $AVAILABILITY_ZONE" /home/ec2-user/Web-Server/placemark/src/views/about-view.hbs
+            EOF
+}
+
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-VPC------------------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+
 # vpc creation
 module "vpc" {
   source = "terraform-aws-modules/vpc/aws"
@@ -12,12 +56,18 @@ module "vpc" {
   enable_nat_gateway = true
   single_nat_gateway = true
 
-  tags = {
-    Terraform = "true"
-    Environment = "dev"
-  }
+  tags = merge(
+    var.default_tags,
+    {
+      VPC-Name = "assignment2-vpc"
+    }
+  )
 }
 
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-BASTION--------------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
 
 # retrieving the latest amazon linux ami
 data "aws_ami" "latest_amazon_linux" {
@@ -49,15 +99,25 @@ data "aws_ami" "latest_amazon_linux" {
 module "ec2_instance" {
   source = "terraform-aws-modules/ec2-instance/aws"
 
-  name = "bastion"
+  name = "bastion host"
   ami = data.aws_ami.latest_amazon_linux.id
   instance_type = "t2.nano"
   key_name = local.pem
   subnet_id = module.vpc.public_subnets[0]
   associate_public_ip_address = true
   vpc_security_group_ids = [module.ssh_security_group.security_group_id, module.egress_security_group.security_group_id]
+  tags = merge(
+  var.default_tags,
+    {
+      Bastion-Name = "assignment2-bastion-host"
+    }
+  )
 }
 
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-SECURITY-GROUPS------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
 
 # egress security group creation
 module "egress_security_group" {
@@ -68,6 +128,12 @@ module "egress_security_group" {
   vpc_id             = module.vpc.vpc_id
   egress_cidr_blocks = ["0.0.0.0/0"]
   egress_rules       = ["all-all"]
+  tags = merge(
+    var.default_tags,
+    {
+      Security-Group-Name = "egress-sg"
+    }
+  )
 }
 
 
@@ -81,6 +147,12 @@ module "web_server_sg" {
 
   ingress_cidr_blocks = ["0.0.0.0/0"]
   ingress_rules = ["http-80-tcp"]
+  tags = merge(
+    var.default_tags,
+    {
+      Security-Group-Name = "web-server-sg"
+    }
+  )
 }
 
 
@@ -95,16 +167,28 @@ resource "aws_security_group_rule" "allow_inbound_3000" {
 }
 
 
-# security group creation for ssh into bastion from anywhere
+# using icanhazip to retrieve the ip of the machine running the terraform script
+data "http" "local_ip" {
+  url = "http://ipv4.icanhazip.com"
+}
+
+
+# security group creation for ssh into bastion from local machine, using the above data (chomp removes any /n in the return)
 module "ssh_security_group" {
   source = "terraform-aws-modules/security-group/aws"
 
   name        = "ssh-sg"
-  description = "Security group for bastion host"
+  description = "Security group to allow ssh into bastion host via ip address of local machine"
   vpc_id      = module.vpc.vpc_id
 
-  ingress_cidr_blocks      = ["0.0.0.0/0"]
+  ingress_cidr_blocks      = ["${chomp(data.http.local_ip.response_body)}/32"]
   ingress_rules            = ["ssh-tcp"]
+  tags = merge(
+    var.default_tags,
+    {
+      Security-Group-Name = "ssh-into-bastion-sg"
+    }
+  )
 }
 
 
@@ -113,13 +197,23 @@ module "ssh_bastion_security_group" {
   source = "terraform-aws-modules/security-group/aws"
 
   name        = "bastion-sg"
-  description = "Security group for bastion host"
+  description = "Security group allowing bastion to ssh into web server instances"
   vpc_id      = module.vpc.vpc_id
 
   ingress_cidr_blocks      = ["${module.ec2_instance.private_ip}/32"]
   ingress_rules            = ["ssh-tcp"]
+  tags = merge(
+    var.default_tags,
+    {
+      Security-Group-Name = "ssh-from-bastion-sg"
+    }
+  )
 }
 
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-LOAD-BALANCER--------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
 
 # load balancer creation
 module "alb" {
@@ -131,6 +225,12 @@ module "alb" {
 	subnets            = module.vpc.public_subnets
 	enable_deletion_protection = false
 	create_security_group = false
+  tags = merge(
+    var.default_tags,
+    {
+      Auto-Load-Balancer-Name = "assignment2-alb"
+    }
+  )
 }
 
 
@@ -168,6 +268,10 @@ resource "aws_lb_listener" "load_balancer_http" {
 }
 
 
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-AUTO-SCALING---------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+
 # autoscaling group creation
 module "asg" {
 	source = "terraform-aws-modules/autoscaling/aws"
@@ -189,7 +293,13 @@ module "asg" {
 	key_name = local.pem
 	security_groups = [module.web_server_sg.security_group_id, module.ssh_bastion_security_group.security_group_id, module.egress_security_group.security_group_id]
 	enable_monitoring = true
-    user_data = base64encode(local.user_data)
+  user_data = base64encode(local.user_data)
+  tags = merge(
+    var.default_tags,
+    {
+      Auto-Scaling-Group-Name = "assignment2-asg"
+    }
+  )
 }
 
 
@@ -214,6 +324,10 @@ resource "aws_autoscaling_policy" "scale_down_policy" {
 	policy_type = "SimpleScaling"
 }
 
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-CLOUDWATCH-----------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
 
 # cloudwatch alarm creation for scaling up
 resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_up_alarm"{
