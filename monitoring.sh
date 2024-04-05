@@ -26,8 +26,8 @@ CONNECTION_SPEED=$(curl -s -w "%{speed_download}\n" -o /dev/null https://fast.co
 # retrieve memory usage
 USEDMEMORY=$(free -m | awk 'NR==2{printf "%.2f\t", $3*100/$2 }')
 
-# retrieve HTTP connection count using grep to check for port 80
-HTTP_CONN=$(netstat -an | grep ':80 ' | wc -l)
+# retrieve HTTP connection count using grep to check for port 3000 (this obviously only counts conncurrent at the time of script execution)
+HTTP_CONN=$(netstat -an | grep ':3000 ' | wc -l)
 
 # instance is overloaded if IO wait is more than 70% and memory is more than 80%
 if (( $(echo "$IO_WAIT > 70" | bc -l) )) && (( $(echo "$USEDMEMORY > 80" | bc -l) )); then
@@ -36,8 +36,8 @@ else
   INSTANCE_OVERLOADED=0
 fi
 
-# if cpu is overtaxed and http connections are more than 100, scaling is needed
-if (( $(echo "$CPU_USAGE > 70" | bc -l) )) && (( $HTTP_CONN > 100 )); then
+# if cpu is overtaxed and http connections are more than 70, scaling is needed (these values were chosen after locust testing)
+if (( $(echo "$CPU_USAGE > 70" | bc -l) )) && (( $HTTP_CONN > 70 )); then
   SCALING_NEEDED=1
 else
   SCALING_NEEDED=0

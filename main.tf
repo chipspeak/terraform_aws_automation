@@ -281,9 +281,9 @@ module "asg" {
 	name                 = "placemark-asg"
 	vpc_zone_identifier  = module.vpc.private_subnets
 	target_group_arns    = [aws_lb_target_group.target_group_http.arn]
-	min_size             = 1
-	max_size             = 3
-	desired_capacity     = 1
+	min_size             = 2
+	max_size             = 5
+	desired_capacity     = 2
 
     health_check_type = "ELB"
     health_check_grace_period = 30
