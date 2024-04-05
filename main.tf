@@ -25,14 +25,16 @@ variable "default_tags" {
 # monitoring script modified from labs and is now created in the user_data script in addition to the cron job
 locals {
     region = "us-east-1"
-    image_id = "your_ami_id"
-    pem = "you_key_pair.pem"
+    image_id = "your_ami_id_here"
+    pem = "your_pem_file_here.pem"
+    instance_profile = "your_instance_profile_arn_here"
     user_data = <<-EOF
             #!/bin/bash
             TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
             INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
             INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
             AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            rm /home/ec2-user/monitoring.log
             sed -i "19i <br>\n<br>\nThis version of placemark is running on the following amazon linux ec2-instance: $INSTANCE_ID in the following availability zone: $AVAILABILITY_ZONE" /home/ec2-user/Web-Server/placemark/src/views/about-view.hbs
             EOF
 }
@@ -294,6 +296,8 @@ module "asg" {
 	security_groups = [module.web_server_sg.security_group_id, module.ssh_bastion_security_group.security_group_id, module.egress_security_group.security_group_id]
 	enable_monitoring = true
   user_data = base64encode(local.user_data)
+  create_iam_instance_profile = false
+  iam_instance_profile_arn    = local.instance_profile
   tags = merge(
     var.default_tags,
     {
