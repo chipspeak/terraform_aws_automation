@@ -44,7 +44,7 @@ else
 fi
 
 # overall check for high http traffic
-if (( $HTTP_CONN > 100 )); then
+if (( $HTTP_CONN > 40 )); then
   HIGH_HTTP_TRAFFIC=1
 else
   HIGH_HTTP_TRAFFIC=0
@@ -66,21 +66,21 @@ aws cloudwatch put-metric-data --metric-name cpu-usage --dimensions Instance=$IN
 aws cloudwatch put-metric-data --metric-name io-wait --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $IO_WAIT >> "$LOG_FILE" 2>&1
 aws cloudwatch put-metric-data --metric-name connection-speed-kb/s --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $CONNECTION_SPEED >> "$LOG_FILE" 2>&1
 aws cloudwatch put-metric-data --metric-name memory-usage --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $USEDMEMORY >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name Http_connections --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $HTTP_CONN >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name http-connections --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $HTTP_CONN >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name instance-overloaded --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $INSTANCE_OVERLOADED >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name scaling-needed --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $SCALING_NEEDED >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name high-http-traffic --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $HIGH_HTTP_TRAFFIC >> "$LOG_FILE" 2>&1
 
 if (( INSTANCE_OVERLOADED == 1 )); then
   echo "Instance is overloaded!" >> "$LOG_FILE"
-  aws cloudwatch put-metric-data --metric-name Instance_overloaded --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $INSTANCE_OVERLOADED >> "$LOG_FILE" 2>&1
 fi
 
 if (( SCALING_NEEDED == 1 )); then
   echo "High CPU Usage detected. Scaling needed immediately!" >> "$LOG_FILE"
-  aws cloudwatch put-metric-data --metric-name Scaling_needed --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $SCALING_NEEDED >> "$LOG_FILE" 2>&1
 fi
 
 if (( HIGH_HTTP_TRAFFIC == 1 )); then
   echo "High HTTP traffic detected!" >> "$LOG_FILE"
-  aws cloudwatch put-metric-data --metric-name High_HTTP_traffic --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $HIGH_HTTP_TRAFFIC >> "$LOG_FILE" 2>&1
 fi
 
 # log end of execution

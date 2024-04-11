@@ -28,6 +28,7 @@ locals {
     image_id = "your_ami_id_here"
     pem = "your_pem_file_here.pem"
     instance_profile = "your_instance_profile_arn_here"
+    email = "your_email_here"
     user_data = <<-EOF
             #!/bin/bash
             TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
@@ -71,7 +72,7 @@ module "vpc" {
 #-BASTION--------------------------------------------------------------------------------------------------------------------------------------------
 #----------------------------------------------------------------------------------------------------------------------------------------------------
 
-# retrieving the latest amazon linux ami
+# retrieving the latest amazon linux ami for bastion creation
 data "aws_ami" "latest_amazon_linux" {
   most_recent = true
 
@@ -281,9 +282,9 @@ module "asg" {
 	name                 = "placemark-asg"
 	vpc_zone_identifier  = module.vpc.private_subnets
 	target_group_arns    = [aws_lb_target_group.target_group_http.arn]
-	min_size             = 2
-	max_size             = 5
-	desired_capacity     = 2
+	min_size             = 1
+	max_size             = 3
+	desired_capacity     = 1
 
     health_check_type = "ELB"
     health_check_grace_period = 30
@@ -308,24 +309,41 @@ module "asg" {
 
 
 # scale up policy creation
-resource "aws_autoscaling_policy" "scale_up_policy" {
+resource "aws_autoscaling_policy" "scale_out_policy" {
 	name = "scale-up-policy"
 	autoscaling_group_name = module.asg.autoscaling_group_name
 	adjustment_type = "ChangeInCapacity"
 	scaling_adjustment = "1"
-	cooldown = "60"
+	cooldown = "300"
 	policy_type = "SimpleScaling"
 }
 
 
 # scale down policy creation
-resource "aws_autoscaling_policy" "scale_down_policy" {
+resource "aws_autoscaling_policy" "scale_in_policy" {
 	name = "scale-down-policy"
 	autoscaling_group_name = module.asg.autoscaling_group_name
 	adjustment_type = "ChangeInCapacity"
 	scaling_adjustment = "-1"
-	cooldown = "60"
+	cooldown = "300"
 	policy_type = "SimpleScaling"
+}
+
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-SNS------------------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+
+# sns topic creation
+resource "aws_sns_topic" "autoscaling_notifications" {
+  name = "autoscaling-notifications"
+}
+
+# subscription to sns topic for email notifications
+resource "aws_sns_topic_subscription" "autoscaling_notifications_subscription" {
+  topic_arn = aws_sns_topic.autoscaling_notifications.arn
+  protocol  = "email"
+  endpoint  = local.email
 }
 
 
@@ -334,13 +352,13 @@ resource "aws_autoscaling_policy" "scale_down_policy" {
 #----------------------------------------------------------------------------------------------------------------------------------------------------
 
 # cloudwatch alarm creation for scaling up
-resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_up_alarm"{
+resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_out_alarm"{
 
   alarm_name          = "placemark-excessive-cpu-utilization-alarm"
-  alarm_description   = "CPU overload of placemark instances"
+  alarm_description   = "CPU average has moved above desirable threshold, scaling out to handle extra load"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = 1
-  threshold           = 50
+  evaluation_periods  = 5
+  threshold           = 60
   period              = 60
   unit                = "Percent"
 
@@ -348,20 +366,23 @@ resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_up_alarm"{
   metric_name = "CPUUtilization"
   statistic   = "Average"
   dimensions = {
-	AutoScalingGroupName = module.asg.autoscaling_group_name
+	  AutoScalingGroupName = module.asg.autoscaling_group_name
   }
   actions_enabled = true
-  alarm_actions   = [aws_autoscaling_policy.scale_up_policy.arn]
+  alarm_actions   = [
+    aws_autoscaling_policy.scale_out_policy.arn,
+    aws_sns_topic.autoscaling_notifications.arn
+    ]
 }
 
 
 # cloudwatch alarm creation for scaling down
-resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_down_alarm"{
+resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_in_alarm"{
 
   alarm_name          = "placemark-low-cpu-utilization-alarm"
   alarm_description   = "CPU average has moved below threshold, shutting down extra instances"
   comparison_operator = "LessThanOrEqualToThreshold"
-  evaluation_periods  = 1
+  evaluation_periods  = 5
   threshold           = 25
   period              = 60
   unit                = "Percent"
@@ -370,9 +391,34 @@ resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_down_alarm"{
   metric_name = "CPUUtilization"
   statistic   = "Average"
   dimensions = {
-	AutoScalingGroupName = module.asg.autoscaling_group_name
+	  AutoScalingGroupName = module.asg.autoscaling_group_name
   }
   actions_enabled = true
-  alarm_actions   = [aws_autoscaling_policy.scale_down_policy.arn]
+  alarm_actions   = [
+    aws_autoscaling_policy.scale_in_policy.arn,
+    aws_sns_topic.autoscaling_notifications.arn
+    ]
+}
+
+# cloudwatch alarm notifiying admin of high http traffic
+resource "aws_cloudwatch_metric_alarm" "high_http_alarm"{
+
+  alarm_name          = "placemark-high-http-traffic-alarm"
+  alarm_description   = "Servers are experiencing high http traffic, if cpu is overutilized scaling out will occur"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  threshold           = 1
+  period              = 60
+
+  namespace   = "custom"
+  metric_name = "high-http-traffic"
+  statistic   = "Maximum"
+  dimensions = {
+	  AutoScalingGroupName = module.asg.autoscaling_group_name
+  }
+  actions_enabled = true
+  alarm_actions   = [aws_sns_topic.autoscaling_notifications.arn]
+  insufficient_data_actions = []
+  treat_missing_data = "notBreaching"
 }
 
