@@ -13,6 +13,7 @@ TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-m
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
 AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+AUTOSCALING_GROUP=$(aws autoscaling describe-auto-scaling-instances --instance-ids $INSTANCE_ID --query "AutoScalingInstances[0].AutoScalingGroupName" --output text)
 
 # retrieve IO wait percentage
 IO_WAIT=$(iostat | awk 'NR==4 {print $5}')
@@ -54,6 +55,7 @@ fi
 # log retrieved metrics
 echo "Metrics for: $INSTANCE_ID" >> "$LOG_FILE"
 echo " " >> "$LOG_FILE"
+echo "Autoscaling Group: $AUTOSCALING_GROUP" >> "$LOG_FILE"
 echo "CPU Usage: $CPU_USAGE%" >> "$LOG_FILE"
 echo "IO Wait: $IO_WAIT%" >> "$LOG_FILE"
 echo "Connection Speed in kb/s: $CONNECTION_SPEED" >> "$LOG_FILE"
@@ -62,14 +64,14 @@ echo "HTTP Connections: $HTTP_CONN" >> "$LOG_FILE"
 
 
 # push metrics to CloudWatch and redirect output to log file in order to capture any errors
-aws cloudwatch put-metric-data --metric-name cpu-usage --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $CPU_USAGE >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name io-wait --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $IO_WAIT >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name connection-speed-kb/s --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $CONNECTION_SPEED >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name memory-usage --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $USEDMEMORY >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name http-connections --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $HTTP_CONN >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name instance-overloaded --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $INSTANCE_OVERLOADED >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name scaling-needed --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $SCALING_NEEDED >> "$LOG_FILE" 2>&1
-aws cloudwatch put-metric-data --metric-name high-http-traffic --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $HIGH_HTTP_TRAFFIC >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name cpu-usage --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $CPU_USAGE >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name io-wait --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $IO_WAIT >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name connection-speed-kb/s --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $CONNECTION_SPEED >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name memory-usage --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $USEDMEMORY >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name http-connections --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $HTTP_CONN >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name instance-overloaded --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $INSTANCE_OVERLOADED >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name scaling-needed --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $SCALING_NEEDED >> "$LOG_FILE" 2>&1
+aws cloudwatch put-metric-data --metric-name high-http-traffic --dimensions AutoScalingGroupName=$AUTOSCALING_GROUP --namespace "Custom" --value $HIGH_HTTP_TRAFFIC >> "$LOG_FILE" 2>&1
 
 if (( INSTANCE_OVERLOADED == 1 )); then
   echo "Instance is overloaded!" >> "$LOG_FILE"

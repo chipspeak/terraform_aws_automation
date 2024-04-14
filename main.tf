@@ -28,7 +28,9 @@ locals {
     image_id = "your_ami_id_here"
     pem = "your_pem_file_here.pem"
     instance_profile = "your_instance_profile_arn_here"
+    role = "your_role_arn_here"
     email = "your_email_here"
+    ASG_NAME = module.asg.autoscaling_group_name
     user_data = <<-EOF
             #!/bin/bash
             TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
@@ -303,14 +305,15 @@ module "asg" {
     var.default_tags,
     {
       Auto-Scaling-Group-Name = "assignment2-asg"
+      "aws:autoscaling:groupName"   = "assignment2-asg"
     }
   )
 }
 
 
-# scale up policy creation
+# scale out policy creation
 resource "aws_autoscaling_policy" "scale_out_policy" {
-	name = "scale-up-policy"
+	name = "scale-out-policy"
 	autoscaling_group_name = module.asg.autoscaling_group_name
 	adjustment_type = "ChangeInCapacity"
 	scaling_adjustment = "1"
@@ -319,9 +322,9 @@ resource "aws_autoscaling_policy" "scale_out_policy" {
 }
 
 
-# scale down policy creation
+# scale in policy creation
 resource "aws_autoscaling_policy" "scale_in_policy" {
-	name = "scale-down-policy"
+	name = "scale-in-policy"
 	autoscaling_group_name = module.asg.autoscaling_group_name
 	adjustment_type = "ChangeInCapacity"
 	scaling_adjustment = "-1"
@@ -339,6 +342,11 @@ resource "aws_sns_topic" "autoscaling_notifications" {
   name = "autoscaling-notifications"
 }
 
+# sns topic creation
+resource "aws_sns_topic" "lambda_notifcations" {
+  name = "lambda-notifications"
+}
+
 # subscription to sns topic for email notifications
 resource "aws_sns_topic_subscription" "autoscaling_notifications_subscription" {
   topic_arn = aws_sns_topic.autoscaling_notifications.arn
@@ -346,12 +354,22 @@ resource "aws_sns_topic_subscription" "autoscaling_notifications_subscription" {
   endpoint  = local.email
 }
 
+# subscription to sns topic for lambda notifications
+resource "aws_sns_topic_subscription" "lambda_notifications_subscription" {
+  topic_arn = aws_sns_topic.lambda_notifcations.arn
+  protocol  = "lambda"
+  endpoint  = module.lambda_function.lambda_function_arn
+}
+
 
 #----------------------------------------------------------------------------------------------------------------------------------------------------
 #-CLOUDWATCH-----------------------------------------------------------------------------------------------------------------------------------------
 #----------------------------------------------------------------------------------------------------------------------------------------------------
 
-# cloudwatch alarm creation for scaling up
+# of note for this section - custom metrics need to be manually created in cloudwatch despite correct dimensions applied in terraform
+# filtering by the asg and using the relevant metric manually works as expected
+
+# cloudwatch alarm creation for scaling out
 resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_out_alarm"{
 
   alarm_name          = "placemark-excessive-cpu-utilization-alarm"
@@ -376,7 +394,7 @@ resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_out_alarm"{
 }
 
 
-# cloudwatch alarm creation for scaling down
+# cloudwatch alarm creation for scaling in
 resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_in_alarm"{
 
   alarm_name          = "placemark-low-cpu-utilization-alarm"
@@ -400,6 +418,7 @@ resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_in_alarm"{
     ]
 }
 
+
 # cloudwatch alarm notifiying admin of high http traffic
 resource "aws_cloudwatch_metric_alarm" "high_http_alarm"{
 
@@ -409,10 +428,11 @@ resource "aws_cloudwatch_metric_alarm" "high_http_alarm"{
   evaluation_periods  = 1
   threshold           = 1
   period              = 60
+  unit                = "Count"
 
   namespace   = "custom"
   metric_name = "high-http-traffic"
-  statistic   = "Maximum"
+  statistic   = "Average"
   dimensions = {
 	  AutoScalingGroupName = module.asg.autoscaling_group_name
   }
@@ -422,3 +442,88 @@ resource "aws_cloudwatch_metric_alarm" "high_http_alarm"{
   treat_missing_data = "notBreaching"
 }
 
+
+# cloudwatch alarm notifiying admin of instance overload
+resource "aws_cloudwatch_metric_alarm" "instance_overloaded_alarm"{
+
+  alarm_name          = "placemark-instance-overloaded-alarm"
+  alarm_description   = "Instance memory and IO are overloaded, scaling out will occur if cpu is overutilized"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 5
+  threshold           = 1
+  period              = 60
+  unit                = "Count"
+
+  namespace   = "custom"
+  metric_name = "instance-overloaded"
+  statistic   = "Average"
+  dimensions = {
+	  AutoScalingGroupName = module.asg.autoscaling_group_name
+  }
+  actions_enabled = true
+  alarm_actions   = [aws_sns_topic.autoscaling_notifications.arn]
+  insufficient_data_actions = []
+  treat_missing_data = "notBreaching"
+}
+
+
+# cloudwatch alarm notifiying admin of a need for increased scaling. This alarm also triggers the lambda function
+# for testing and report demonstration this was set to a 1/1 evaluation for brevity
+# in practice 10/10 would be more appropriate to account for the 5 minute potential relief via scale in policy
+resource "aws_cloudwatch_metric_alarm" "scaling_needed_alarm"{
+
+  alarm_name          = "placemark-scaling-needed-alarm"
+  alarm_description   = "Current ASG settings are not sufficient to handle current load, increasing max instances"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 10
+  threshold           = 1
+  period              = 60
+  unit                = "Count"
+
+  namespace   = "custom"
+  metric_name = "scaling-needed"
+  statistic   = "Average"
+  dimensions = {
+	  AutoScalingGroupName = module.asg.autoscaling_group_name
+  }
+  actions_enabled = true
+  alarm_actions   = [
+                      aws_sns_topic.autoscaling_notifications.arn,
+                      aws_sns_topic.lambda_notifcations.arn
+                      ]
+  insufficient_data_actions = []
+  treat_missing_data = "notBreaching"
+}
+
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+#-LAMBDA---------------------------------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------------------------------------
+
+# similar to the custom metrics, the lambda function needs to be manually linked to the correct trigger in the console despite the code here
+# once linked, functions as intended when invoked by the scaling_needed_alarm
+
+# lambda function creation (see increase_max_instances.py for the function code)
+module "lambda_function" {
+  source = "terraform-aws-modules/lambda/aws"
+
+  function_name = "increase_max"
+  description   = "Function to increase max size of asg"
+  handler       = "increase_max_instances.lambda_handler"
+  runtime       = "python3.8"
+  create_role = "false"
+  lambda_role = local.role
+
+  source_path = "./increase_max_instances.py"
+  
+  environment_variables = {
+    ASG_NAME = local.ASG_NAME
+  }
+
+  tags = merge(
+    var.default_tags,
+    {
+      Lambda-Function-Name = "increase-max-capacity"
+    }
+  )
+}
