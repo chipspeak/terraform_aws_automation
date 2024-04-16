@@ -21,18 +21,24 @@ def lambda_handler(event, context):
       response = autoscaling_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
       # getting the current max size of the autoscaling group (3 by default via terraform setup)
       current_max_size = response['AutoScalingGroups'][0]['MaxSize']
-      # increasing max size by 1
-      new_max_size = current_max_size + 1
-      # updating the autoscaling group with the new max size
-      response = autoscaling_client.update_auto_scaling_group(
-          AutoScalingGroupName=asg_name,
-          MaxSize=new_max_size
-      )
-      # return a success message
-      return {
-          'statusCode': 200,
-          'body': 'Max instances increased to ' + str(new_max_size)
-      }
+      if current_max_size >= 10:
+        return {
+            'statusCode': 200,
+            'body': 'Max instances already at maximum limit of 10'
+        }
+      else:
+        # increasing max size by 1
+        new_max_size = current_max_size + 1
+        # updating the autoscaling group with the new max size
+        response = autoscaling_client.update_auto_scaling_group(
+            AutoScalingGroupName=asg_name,
+            MaxSize=new_max_size
+        )
+        # return a success message
+        return {
+            'statusCode': 200,
+            'body': 'Max instances increased to ' + str(new_max_size)
+        }
     # if the alarm is in OK state, return a success message
     else:
       return {
