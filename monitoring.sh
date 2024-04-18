@@ -15,22 +15,25 @@ INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169
 AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
 AUTOSCALING_GROUP=$(aws autoscaling describe-auto-scaling-instances --instance-ids $INSTANCE_ID --query "AutoScalingInstances[0].AutoScalingGroupName" --output text)
 
-# retrieve IO wait percentage
+# retrieve IO wait percentage via iostat piped to awk. NR==4 is used to get the 4th line before printing the 5th column of that line
 IO_WAIT=$(iostat | awk 'NR==4 {print $5}')
 
-# retrieve CPU usage
+# retrieve CPU usage via top -bn1 (to run top once) piped into grep to get the line with "Cpu(s)"
+# regex is used to skip the initial text on each line, the second group accounts for the floating point by matching any number of digits and a period followed by a % 
+# before matching id for idle time the awk command then subtracts the idle time from 100 to get the CPU usage
 CPU_USAGE=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
 
-# retrieve connection speed via fast.com
+# retrieve connection speed via fast.com before routing the returned contents to /dev/null and using curl's -w flag to print the speed_download in kb/s
 CONNECTION_SPEED=$(curl -s -w "%{speed_download}\n" -o /dev/null https://fast.com)
 
-# retrieve memory usage
+# retrieve memory usage via free -m and awk to get the second line and calculate the percentage of used memory via awk multiplying 
+# the third column (used memory) by 100 and dividing by the second column (total memory)
 USEDMEMORY=$(free -m | awk 'NR==2{printf "%.2f\t", $3*100/$2 }')
 
 # retrieve HTTP connection count using grep to check for port 3000 (this obviously only counts conncurrent at the time of script execution)
 HTTP_CONN=$(netstat -an | grep ':3000 ' | wc -l)
 
-# instance is overloaded if IO wait is more than 70% and memory is more than 80%
+# instance is overloaded if IO wait is more than 70% and memory is more than 80% (echo used here and in the following if statements to compare floating point numbers)
 if (( $(echo "$IO_WAIT > 70" | bc -l) )) && (( $(echo "$USEDMEMORY > 80" | bc -l) )); then
   INSTANCE_OVERLOADED=1
 else

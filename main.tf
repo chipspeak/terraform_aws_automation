@@ -414,7 +414,8 @@ resource "aws_cloudwatch_metric_alarm" "placemark_cpu_scale_in_alarm"{
   actions_enabled = true
   alarm_actions   = [
     aws_autoscaling_policy.scale_in_policy.arn,
-    aws_sns_topic.autoscaling_notifications.arn
+    aws_sns_topic.autoscaling_notifications.arn,
+    aws_sns_topic.lambda_notifcations.arn
     ]
 }
 
@@ -527,3 +528,4 @@ module "lambda_function" {
     }
   )
 }
+
